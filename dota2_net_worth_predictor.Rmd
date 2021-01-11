@@ -1,0 +1,153 @@
+---
+title: "Predicting player's net worth in DOTA2"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Authors: Maxym Kuzyshyn, Igor Ramskyi
+
+
+### Aim of the research
+  The main goal of this research is to study and analyze the data from a strategy game, called DoTA 2, where there are exactly 5 players on both teams that are thriving to destroy the enemy's base, and usually, the one that has more resources wins. In this research, we will study the relationship between various statistical parameters that could be gathered during the game, and will analyze how they influence the amount of resources each player is able to gather in the end. Our aim is to figure out which parameters are more significant than others, and based on this knowledge, make a model that accurately predicts an amount of money, each player finishes a game with. Of course, this does not make much sense for those who do not play the game but still it can be interesting not only for players and bookmakers, but also usual people, who are curious to discover new fields.
+
+
+### Reading the data and importing libraries
+We used dataset, that could be downloaded from https://www.kaggle.com/devinanzelmo/dota-2-matches
+```{r}
+library(moments)
+library("ggpubr")
+library("Hmisc")
+
+# Reading the data
+matches <- read.csv("./data/match.csv")
+players <- read.csv("./data/players.csv")
+# Now, merge two data frames by match index
+df <- merge(players, matches,by="match_id")
+
+df
+```
+### Filtering the data
+We need to filter out matches, that last for less that 20, or more than 80 minutes, because 99% of the games last from 20 to 80 minutes. Also we discard all players whose hero_id equals 0, or leaver_status is True(as they have abandoned the game). Also, last line calculates win column (whether a player won or lost a specific game)
+```{r}
+df_filtered <- df[(((df$duration >= 20*60) & (df$duration <= 80*60)) & (df$game_mode == 22) & ((df$hero_id == 67) & (df$leaver_status == 0))),]
+
+# Summing up 32 columns that are responsible for how many clicks has a player done during the game and adding them to the general data frame
+df_filtered <- data.frame(df_filtered, unitSum=rowSums(df_filtered[41:73], na.rm=TRUE))
+
+print(nrow(df_filtered))
+
+df_filtered$win <- (df_filtered$player_slot <= 4 & df_filtered$radiant_win == "True") | (df_filtered$player_slot >= 128 & df_filtered$radiant_win == "False")
+df_filtered$duration <- df_filtered$duration / 60
+df_filtered
+```
+### Calculating net worth (value to predict)
+In DoTA 2, net worth is calculated as the sum of all gold that a single player gained from various sources minus all gold that player has lost during the game. Finally, we remove unnecessary columns, and are ready for feature selection.
+```{r}
+# each player gains exactly 95 gold per minute
+df_filtered$gold_time = round(95 * (df_filtered$duration / 60), 0)
+
+df_filtered <- data.frame(df_filtered, net_worth=rowSums(df_filtered[c(30:39, 87:87)], na.rm=TRUE))
+
+# Filtering out the main parameters, and preparing data frame for feature selection
+df_filtered = subset(df_filtered, select = c(match_id, net_worth,account_id,hero_id,win,xp_per_min,kills,deaths,assists,denies,last_hits,hero_damage,tower_damage,level,duration,tower_status_radiant,tower_status_dire,barracks_status_dire,barracks_status_radiant,unitSum))
+
+colnames(df_filtered)
+
+```
+Now, we are left with 20 columns, and 6359 rows
+
+
+### Mean, skewness, and kurtosis of duration and net worth
+#### Duration
+
+```{r}
+hist.data.frame(df_filtered["duration"])
+```
+
+```{r}
+lapply(df_filtered["duration"], mean, na.rm = TRUE)
+print(paste("Duration skewness:", skewness(df_filtered["duration"])))
+print(paste("Duration kurtosis:", kurtosis(df_filtered["duration"])))
+```
+Here we found duration mean to make prediction on, basically, duration. Skewness > 0 shows that right tail is heavier, therefore, short matches are more likely than long ones. Kurtosis > 0 shows that tails are heavier than in normal distribution, so predictions on duration are going to be less precise because of greater count of outliers.
+
+#### Net worth
+```{r}
+hist.data.frame(df_filtered["net_worth"])
+```
+
+```{r}
+lapply(df_filtered["net_worth"], mean, na.rm = TRUE)
+print(paste("Duration skewness:", skewness(df_filtered["net_worth"])))
+print(paste("Duration kurtosis:", kurtosis(df_filtered["net_worth"])))
+```
+Same goes for net worth mean, skewness and kurtosis, except skewness and kurtosis are bit closer to 0.
+
+### Feature selection
+
+#### Hypothesis testing
+We want to test whether duration of the game and net worth of a single player are related, using $\alpha=0.05$.
+$H_0: p=0$ - the final net worth of a player does not depend on the duration of the game 
+$H_1: p\ne0$ - there is a non-zero relation between those two parameters
+
+
+Firstly, let's take a look at the relation on the following scatterplot:
+```{r}
+ggscatter(df_filtered, x = "duration", y = "net_worth", color="black",
+          cor.coef = TRUE, add = "reg.line", conf.int = TRUE, 
+          cor.method = "pearson", xlab = "duration(minutes)",
+          ylab = "net worth(gold)", size = 1, alpha=0.75, title="Relation betweet the duration of the game and player net worth")
+
+```
+From the plot above, we can see that relationship between parameters is linear.
+
+As we have 6359 subjects, we subtract our degrees of freedom $ds=6359-2=6357$
+Also, as each observation of net_worth has corresponding pair(duration), and there are no outliers that could significantly skew our results. Finally, the shape of the scatterplot is linear(see the graph above), which means that Pearson's correlation test could be used here.
+So, we will use Pearson's correlation test to determine a linear relationship between our parameters. 
+
+Pearson correlation(r) is equal to:
+$r=\frac{\sum (x-m_x)(y-m_y)}{\sqrt(\sum(x-m_x)^2\sum(y-m_y)^2)}$
+and the p-value can be computed using the correlation coefficient table for 6357 degrees of freedom.
+
+
+
+Pearson correlation test
+```{r}
+res <- cor.test(df_filtered$net_worth, df_filtered$duration, 
+                    method = "pearson")
+res
+```
+As we can see, the p-value=$2.2* {10}^{-16}$ is far less that our $\alpha=0.05$, and thus, we can conclude that net worth and duration are significantly correlated with a correlation coefficient 0.62, and p value=$2.2 e^{-16}$, which is intuitive, because the more player develops his hero, the more resources and money he is able to gather.
+
+
+#### Figuring out other parameters that might correlate with net worth
+```{r}
+source("http://www.sthda.com/upload/rquery_cormat.r")
+test_correlation <- df_filtered[c(2:2, 5:20)]
+
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+rquery.cormat(test_correlation, type="full")
+```
+As we can see from correlation matrix and graph above, the following parameters have the most significant impact on the net worth:
+deaths, win, tower_damage, kills, tower_damage, xp_per_min level, unitSum, assists, duration, last_hits
+
+
+
+### Linear regression modelling for net worth in Dota 2
+```{r}
+model.lm = lm(net_worth~ deaths+win+tower_damage+kills+xp_per_min+level+unitSum+assists+duration+last_hits, data=df_filtered)
+summary(model.lm)
+```
+We can see that our standard error is equal 1794, and our determination coefficient, $r^2$ is 0.9378, which means that our model is well-fit, and that we achieved a decent result overall. Also, small p-value< 2.2e-16 indicates that there is a significant relationship between our parameters, and net worth of a player.
+
+Let's test our model by applying it to the average game of our friend:
+```{r}
+friends_data <-data.frame(deaths=7,win=FALSE,kills=12,tower_damage=2900,xp_per_min=721,level=28,unitSum=2000,assists=14,duration=58,last_hits=400)
+
+predict(model.lm, newdata=friends_data, interval="prediction")
+```
+In reality, his net worth at the end of the game was exactly 24000, so our model did a really good job.
+
+### Conclusion
+As a result we figured out that there is a linear relationship between the majority of parameters, and in hypothesis testing using Pearson correlation test, we have found parameters that proved to be most significant in our future prediction. Finally, after making sure that linear regression model is applicable to our task, we have trained a multiple linear regression model. It gave us a successful prediction on real-world data, that it has not seen before.
